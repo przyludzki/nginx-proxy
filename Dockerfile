@@ -35,18 +35,47 @@ RUN git clone https://github.com/nginx-proxy/forego/ \
    && cd - \
    && rm -rf /go/forego
 
+FROM nginx:1.21.1 as nginx-geoip2
+
+ARG NGINX_VERSION=1.21.1
+ARG GEOIP2_VERSION=3.4
+
+RUN apt-get update \
+    && apt-get install -y \
+        build-essential \
+        libpcre++-dev \
+        zlib1g-dev \
+        libgeoip-dev \
+        libmaxminddb-dev \
+        wget \
+        git
+
+RUN cd /opt \
+    && git clone --depth 1 -b $GEOIP2_VERSION --single-branch https://github.com/leev/ngx_http_geoip2_module.git \
+    && wget -O - http://nginx.org/download/nginx-$NGINX_VERSION.tar.gz | tar zxfv - \
+    && mv /opt/nginx-$NGINX_VERSION /opt/nginx \
+    && cd /opt/nginx \
+    && ./configure --with-compat --add-dynamic-module=/opt/ngx_http_geoip2_module \
+    && make modules
+
 # Build the final image
 FROM nginx:1.21.1
 LABEL maintainer="Nicolas Duchon <nicolas.duchon@gmail.com> (@buchdag)"
+
+COPY --from=nginx-geoip2 /opt/nginx/objs/ngx_http_geoip2_module.so /usr/lib/nginx/modules
 
 # Install wget and install/updates certificates
 RUN apt-get update \
    && apt-get install -y -q --no-install-recommends \
    ca-certificates \
    wget \
+   libmaxminddb0 \
    && apt-get clean \
-   && rm -r /var/lib/apt/lists/*
-
+   && rm -r /var/lib/apt/lists/* \
+   && chmod -R 644 /usr/lib/nginx/modules/ngx_http_geoip2_module.so \
+   && sed -i '1iload_module \/usr\/lib\/nginx\/modules\/ngx_http_geoip2_module.so;' /etc/nginx/nginx.conf \
+   && sed -i '25igeoip2 /app/GeoLite2-City.mmdb { $geoip2_data_city_name   city names en;  }' /etc/nginx/nginx.conf \
+   && sed -i '25igeoip2 /app/GeoLite2-Country.mmdb { $geoip2_data_continent_code   continent code; $geoip2_data_country_iso_code country iso_code; }' /etc/nginx/nginx.conf
 
 # Configure Nginx and apply fix for very long server names
 RUN echo "daemon off;" >> /etc/nginx/nginx.conf \
